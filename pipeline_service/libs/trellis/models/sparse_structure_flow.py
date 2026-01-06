@@ -3,8 +3,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-from ..modules.utils import convert_module_to_f16, convert_module_to_f32, convert_module_to_bf16
-from ..modules.transformer import AbsolutePositionEmbedder, ModulatedTransformerCrossBlock, ModulatedTransformerCrossBlock_woT
+from ..modules.utils import convert_module_to_f16, convert_module_to_f32
+from ..modules.transformer import AbsolutePositionEmbedder, ModulatedTransformerCrossBlock
 from ..modules.spatial import patchify, unpatchify
 
 
@@ -67,7 +67,6 @@ class SparseStructureFlowModel(nn.Module):
         patch_size: int = 2,
         pe_mode: Literal["ape", "rope"] = "ape",
         use_fp16: bool = False,
-        use_bf16: bool = False,
         use_checkpoint: bool = False,
         share_mod: bool = False,
         qk_rms_norm: bool = False,
@@ -85,17 +84,11 @@ class SparseStructureFlowModel(nn.Module):
         self.patch_size = patch_size
         self.pe_mode = pe_mode
         self.use_fp16 = use_fp16
-        self.use_bf16 = use_bf16
         self.use_checkpoint = use_checkpoint
         self.share_mod = share_mod
         self.qk_rms_norm = qk_rms_norm
         self.qk_rms_norm_cross = qk_rms_norm_cross
-        if use_fp16:
-            self.dtype = torch.float16
-        elif use_bf16:
-            self.dtype = torch.bfloat16
-        else:
-            self.dtype = torch.float32
+        self.dtype = torch.float16 if use_fp16 else torch.float32
 
         self.t_embedder = TimestepEmbedder(model_channels)
         if share_mod:
@@ -105,10 +98,10 @@ class SparseStructureFlowModel(nn.Module):
             )
 
         if pe_mode == "ape":
-            self.pos_embedder = AbsolutePositionEmbedder(model_channels, 3)
+            pos_embedder = AbsolutePositionEmbedder(model_channels, 3)
             coords = torch.meshgrid(*[torch.arange(res, device=self.device) for res in [resolution // patch_size] * 3], indexing='ij')
             coords = torch.stack(coords, dim=-1).reshape(-1, 3)
-            pos_emb = self.pos_embedder(coords)
+            pos_emb = pos_embedder(coords)
             self.register_buffer("pos_emb", pos_emb)
 
         self.input_layer = nn.Linear(in_channels * patch_size**3, model_channels)
@@ -134,8 +127,6 @@ class SparseStructureFlowModel(nn.Module):
         self.initialize_weights()
         if use_fp16:
             self.convert_to_fp16()
-        elif use_bf16:
-            self.convert_to_bf16()
 
     @property
     def device(self) -> torch.device:
@@ -148,27 +139,12 @@ class SparseStructureFlowModel(nn.Module):
         """
         Convert the torso of the model to float16.
         """
-        self.use_fp16 = True
-        self.use_bf16 = False
-        self.dtype = torch.float16
         self.blocks.apply(convert_module_to_f16)
-
-    def convert_to_bf16(self) -> None:
-        """
-        Convert the torso of the model to bfloat16.
-        """
-        self.use_fp16 = False
-        self.use_bf16 = True
-        self.dtype = torch.bfloat16
-        self.blocks.apply(convert_module_to_bf16)
 
     def convert_to_fp32(self) -> None:
         """
         Convert the torso of the model to float32.
         """
-        self.use_fp16 = False
-        self.use_bf16 = False
-        self.dtype = torch.float32
         self.blocks.apply(convert_module_to_f32)
 
     def initialize_weights(self) -> None:
@@ -211,15 +187,9 @@ class SparseStructureFlowModel(nn.Module):
             t_emb = self.adaLN_modulation(t_emb)
         t_emb = t_emb.type(self.dtype)
         h = h.type(self.dtype)
-        if isinstance(cond, list):
-            for i in range(len(cond)):
-                cond_tmp = cond[i].type(self.dtype)
-                for block in self.blocks:
-                    h = block(h, t_emb, cond_tmp)
-        else:
-            cond = cond.type(self.dtype)
-            for block in self.blocks:
-                h = block(h, t_emb, cond)
+        cond = cond.type(self.dtype)
+        for block in self.blocks:
+            h = block(h, t_emb, cond)
         h = h.type(x.dtype)
         h = F.layer_norm(h, h.shape[-1:])
         h = self.out_layer(h)
@@ -228,76 +198,3 @@ class SparseStructureFlowModel(nn.Module):
         h = unpatchify(h, self.patch_size).contiguous()
 
         return h
-
-class ModulatedMultiViewCond(nn.Module):
-    """
-    Transformer cross-attention block (MSA + MCA + FFN) with adaptive layer norm conditioning.
-    """
-    def __init__(
-        self,
-        channels: int,
-        ctx_channels: int,
-        num_heads: int,
-        mlp_ratio: float = 4.0,
-        attn_mode: Literal["full", "windowed"] = "full",
-        window_size: Optional[int] = None,
-        shift_window: Optional[Tuple[int, int, int]] = None,
-        use_checkpoint: bool = False,
-        use_rope: bool = False,
-        qk_rms_norm: bool = False,
-        qk_rms_norm_cross: bool = False,
-        qkv_bias: bool = True,
-        share_mod: bool = False,
-        num_init_tokens: int = 4096,
-        dtype: Optional[torch.dtype] = torch.float32,
-        use_fp16: bool = False,
-    ):
-        super().__init__()
-        self.cond_blocks = nn.ModuleList([
-            ModulatedTransformerCrossBlock_woT(
-                channels,
-                ctx_channels,
-                num_heads=num_heads,
-                mlp_ratio=mlp_ratio,
-                attn_mode=attn_mode,
-                use_checkpoint=use_checkpoint,
-                use_rope=use_rope,
-                share_mod=share_mod,
-                qk_rms_norm=qk_rms_norm,
-                qk_rms_norm_cross=qk_rms_norm_cross,
-            )
-            for _ in range(4)
-        ])
-        self.use_fp16 = use_fp16
-        if use_fp16:
-            self.dtype = torch.float16
-        else:
-            self.dtype = dtype
-        self.multiview_cond_tokens = nn.Parameter(torch.randn(1, num_init_tokens, channels).to(dtype))
-        nn.init.normal_(self.multiview_cond_tokens, std=1e-6)
-        self.intermediate_layer_idx = [4, 11, 17, 23]
-        if use_fp16:
-            self.convert_to_fp16()
-
-
-    def convert_to_fp16(self) -> None:
-        """
-        Convert the torso of the model to float16.
-        """
-        self.use_fp16 = True
-        self.dtype = torch.float16
-        self.cond_blocks.apply(convert_module_to_f16)
-        self.multiview_cond_tokens = nn.Parameter(self.multiview_cond_tokens.data.to(self.dtype))
-    def forward(self, aggregated_tokens_list: List, image_cond: torch.Tensor):
-
-        b = aggregated_tokens_list[0].shape[0]
-        patch_start_idx = 5
-        idx = 0
-        cond = self.multiview_cond_tokens.repeat(b, 1, 1)
-        for layer_idx in self.intermediate_layer_idx:
-            x = aggregated_tokens_list[layer_idx][:, :, patch_start_idx:]
-            # x = x.reshape(b, -1, 2048) + torch.cat([image_cond.reshape(b, -1, 1024), image_cond.reshape(b, -1, 1024)],dim=-1)
-            x = torch.cat([x.reshape(b, -1, 2048), image_cond.reshape(b, -1, 1024)],dim=-1).to(self.dtype)
-            cond = self.cond_blocks[idx](cond, x)
-            idx = idx + 1
-        return cond

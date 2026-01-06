@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from io import BytesIO
+from typing import AsyncGenerator
 import base64
 
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form
@@ -78,21 +79,30 @@ async def generate_from_base64(request: GenerateRequest) -> GenerateResponse:
 async def generate(prompt_image_file: UploadFile = File(...), seed: int = Form(-1)) -> StreamingResponse:
     """
     Upload image file and generate 3D model as PLY buffer.
-    
     Returns binary PLY file directly.
     """
     try:
         logger.info(f"Task received. Uploading image: {prompt_image_file.filename}")
-        
+
         # Generate PLY from uploaded file
         ply_bytes = await pipeline.generate_from_upload(await prompt_image_file.read(), seed)
-        
-        logger.info(f"Task completed. PLY size: {len(ply_bytes)} bytes")
-        
-        # Return as streaming binary response
+
+        # Wrap bytes in BytesIO for streaming
+        ply_buffer = BytesIO(ply_bytes)
+        buffer_size = len(ply_buffer.getvalue())
+        ply_buffer.seek(0)
+        logger.info(f"Task completed. PLY size: {buffer_size} bytes")
+
+        # Generate chunks of the ply file
+        async def generate_chunks()->AsyncGenerator[bytes, None]:
+            chunk_size = 1024 * 1024  # 1 MB
+            while chunk := ply_buffer.read(chunk_size):
+                yield chunk
+     
         return StreamingResponse(
-            BytesIO(ply_bytes), 
+            generate_chunks(),
             media_type="application/octet-stream",
+            headers={"Content-Length": str(buffer_size)}
         )
         
     except Exception as exc:

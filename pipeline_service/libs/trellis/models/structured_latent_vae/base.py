@@ -1,7 +1,7 @@
 from typing import *
 import torch
 import torch.nn as nn
-from ...modules.utils import convert_module_to_f16, convert_module_to_f32, convert_module_to_bf16
+from ...modules.utils import convert_module_to_f16, convert_module_to_f32
 from ...modules import sparse as sp
 from ...modules.transformer import AbsolutePositionEmbedder
 from ...modules.sparse.transformer import SparseTransformerBlock
@@ -41,7 +41,6 @@ class SparseTransformerBase(nn.Module):
         window_size: Optional[int] = None,
         pe_mode: Literal["ape", "rope"] = "ape",
         use_fp16: bool = False,
-        use_bf16: bool = False,
         use_checkpoint: bool = False,
         qk_rms_norm: bool = False,
     ):
@@ -55,15 +54,9 @@ class SparseTransformerBase(nn.Module):
         self.attn_mode = attn_mode
         self.pe_mode = pe_mode
         self.use_fp16 = use_fp16
-        self.use_bf16 = use_bf16
         self.use_checkpoint = use_checkpoint
         self.qk_rms_norm = qk_rms_norm
-        if use_fp16:
-            self.dtype = torch.float16
-        elif use_bf16:
-            self.dtype = torch.bfloat16
-        else:
-            self.dtype = torch.float32
+        self.dtype = torch.float16 if use_fp16 else torch.float32
 
         if pe_mode == "ape":
             self.pos_embedder = AbsolutePositionEmbedder(model_channels)
@@ -97,27 +90,12 @@ class SparseTransformerBase(nn.Module):
         """
         Convert the torso of the model to float16.
         """
-        self.use_fp16 = True
-        self.use_bf16 = False
-        self.dtype = torch.float16
         self.blocks.apply(convert_module_to_f16)
-
-    def convert_to_bf16(self) -> None:
-        """
-        Convert the torso of the model to bfloat16.
-        """
-        self.use_fp16 = False
-        self.use_bf16 = True
-        self.dtype = torch.bfloat16
-        self.blocks.apply(convert_module_to_bf16)
 
     def convert_to_fp32(self) -> None:
         """
         Convert the torso of the model to float32.
         """
-        self.use_fp16 = False
-        self.use_bf16 = False
-        self.dtype = torch.float32
         self.blocks.apply(convert_module_to_f32)
 
     def initialize_weights(self) -> None:

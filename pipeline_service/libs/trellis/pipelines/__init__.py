@@ -1,8 +1,5 @@
-## trellis/pipelines/__init__.py
 from . import samplers
-# from .trellis_image_to_3d import TrellisVGGTTo3DPipeline
-
-from .trellis_image_to_3d_vggt import TrellisImageTo3DPipeline
+from .trellis_image_to_3d import TrellisImageTo3DPipeline
 
 
 def from_pretrained(path: str):

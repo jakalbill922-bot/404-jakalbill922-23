@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from ..modules.norm import GroupNorm32, ChannelLayerNorm32
 from ..modules.spatial import pixel_shuffle_3d
-from ..modules.utils import zero_module, convert_module_to_f16, convert_module_to_f32, convert_module_to_bf16
+from ..modules.utils import zero_module, convert_module_to_f16, convert_module_to_f32
 
 
 def norm_layer(norm_type: str, *args, **kwargs) -> nn.Module:
@@ -71,57 +71,6 @@ class DownsampleBlock3d(nn.Module):
         else:
             return F.avg_pool3d(x, 2)
 
-class ResBlock2d(nn.Module):
-    def __init__(
-        self,
-        channels: int,
-        out_channels: Optional[int] = None,
-        norm_type: Literal["group", "layer"] = "layer",
-    ):
-        super().__init__()
-        self.channels = channels
-        self.out_channels = out_channels or channels
-
-        self.norm1 = norm_layer(norm_type, channels)
-        self.norm2 = norm_layer(norm_type, self.out_channels)
-        self.conv1 = nn.Conv2d(channels, self.out_channels, 3, padding=1)
-        self.conv2 = zero_module(nn.Conv2d(self.out_channels, self.out_channels, 3, padding=1))
-        self.skip_connection = nn.Conv2d(channels, self.out_channels, 1) if channels != self.out_channels else nn.Identity()
-    
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        h = self.norm1(x)
-        h = F.silu(h)
-        h = self.conv1(h)
-        h = self.norm2(h)
-        h = F.silu(h)
-        h = self.conv2(h)
-        h = h + self.skip_connection(x)
-        return h
-
-
-class DownsampleBlock2d(nn.Module):
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        mode: Literal["conv", "avgpool"] = "conv",
-    ):
-        assert mode in ["conv", "avgpool"], f"Invalid mode {mode}"
-
-        super().__init__()
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-
-        if mode == "conv":
-            self.conv = nn.Conv2d(in_channels, out_channels, 2, stride=2)
-        elif mode == "avgpool":
-            assert in_channels == out_channels, "Pooling mode requires in_channels to be equal to out_channels"
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if hasattr(self, "conv"):
-            return self.conv(x)
-        else:
-            return F.avg_pool2d(x, 2)
 
 class UpsampleBlock3d(nn.Module):
     def __init__(
@@ -171,7 +120,6 @@ class SparseStructureEncoder(nn.Module):
         num_res_blocks_middle: int = 2,
         norm_type: Literal["group", "layer"] = "layer",
         use_fp16: bool = False,
-        use_bf16: bool = False,
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -181,13 +129,7 @@ class SparseStructureEncoder(nn.Module):
         self.num_res_blocks_middle = num_res_blocks_middle
         self.norm_type = norm_type
         self.use_fp16 = use_fp16
-        self.use_bf16 = use_bf16
-        if use_fp16:
-            self.dtype = torch.float16
-        elif use_bf16:
-            self.dtype = torch.bfloat16
-        else:
-            self.dtype = torch.float32
+        self.dtype = torch.float16 if use_fp16 else torch.float32
 
         self.input_layer = nn.Conv3d(in_channels, channels[0], 3, padding=1)
 
@@ -215,8 +157,6 @@ class SparseStructureEncoder(nn.Module):
 
         if use_fp16:
             self.convert_to_fp16()
-        elif use_bf16:
-            self.convert_to_bf16()
 
     @property
     def device(self) -> torch.device:
@@ -233,15 +173,6 @@ class SparseStructureEncoder(nn.Module):
         self.dtype = torch.float16
         self.blocks.apply(convert_module_to_f16)
         self.middle_block.apply(convert_module_to_f16)
-    
-    def convert_to_bf16(self) -> None:
-        """
-        Convert the torso of the model to float16.
-        """
-        self.use_bf16 = True
-        self.dtype = torch.bfloat16
-        self.blocks.apply(convert_module_to_bf16)
-        self.middle_block.apply(convert_module_to_bf16)
 
     def convert_to_fp32(self) -> None:
         """
@@ -298,7 +229,6 @@ class SparseStructureDecoder(nn.Module):
         num_res_blocks_middle: int = 2,
         norm_type: Literal["group", "layer"] = "layer",
         use_fp16: bool = False,
-        use_bf16: bool = False,
     ):
         super().__init__()
         self.out_channels = out_channels
@@ -308,13 +238,7 @@ class SparseStructureDecoder(nn.Module):
         self.num_res_blocks_middle = num_res_blocks_middle
         self.norm_type = norm_type
         self.use_fp16 = use_fp16
-        self.use_bf16 = use_bf16
-        if use_fp16:
-            self.dtype = torch.float16
-        elif use_bf16:
-            self.dtype = torch.bfloat16
-        else:
-            self.dtype = torch.float32
+        self.dtype = torch.float16 if use_fp16 else torch.float32
 
         self.input_layer = nn.Conv3d(latent_channels, channels[0], 3, padding=1)
 
@@ -342,8 +266,6 @@ class SparseStructureDecoder(nn.Module):
 
         if use_fp16:
             self.convert_to_fp16()
-        elif use_bf16:
-            self.convert_to_bf16()
 
     @property
     def device(self) -> torch.device:
@@ -361,21 +283,11 @@ class SparseStructureDecoder(nn.Module):
         self.blocks.apply(convert_module_to_f16)
         self.middle_block.apply(convert_module_to_f16)
 
-    def convert_to_bf16(self) -> None:
-        """
-        Convert the torso of the model to bfloat16.
-        """
-        self.use_bf16 = True
-        self.dtype = torch.bfloat16
-        self.blocks.apply(convert_module_to_bf16)
-        self.middle_block.apply(convert_module_to_bf16)
-
     def convert_to_fp32(self) -> None:
         """
         Convert the torso of the model to float32.
         """
         self.use_fp16 = False
-        self.use_bf16 = False
         self.dtype = torch.float32
         self.blocks.apply(convert_module_to_f32)
         self.middle_block.apply(convert_module_to_f32)

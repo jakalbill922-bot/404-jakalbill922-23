@@ -69,7 +69,7 @@ class QwenManager:
         self.pipe = self._get_model_pipe(transformer, scheduler)
 
         self.pipe.load_lora_weights(
-            "lightx2v/Qwen-Image-Lightning",
+            "lightx2v/Qwen-Image-Edit-2511-Lightning",
             weight_name=self.settings.qwen_edit_base_model_path
         )
         # Move model pipe to device

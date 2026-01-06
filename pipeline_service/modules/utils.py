@@ -107,24 +107,34 @@ def save_image(image: Image.Image, folder: str, prefix: str, timestamp: str) -> 
 
 def save_files(
     trellis_result: Optional[TrellisResult], 
-    image_edited: Image.Image, 
-    image_without_background: Image.Image
+    input_image: Image.Image,
+    image_edited_1: Image.Image, 
+    image_without_background_1: Image.Image,
+    image_edited_2: Image.Image,
+    image_without_background_2: Image.Image,
+    image_edited_3: Image.Image,
+    image_without_background_3: Image.Image
 ) -> None:
     """
     Save the generated files to the output directory.
 
     Args:
         trellis_result: The Trellis result to save.
-        image_edited: The edited image to save.
-        image_without_background: The image without background to save.
+        input_image: The original input image.
+        image_edited_1: The first edited image (left view).
+        image_without_background_1: The first image without background.
+        image_edited_2: The second edited image (right view).
+        image_without_background_2: The second image without background.
+        image_edited_3: The third edited image (back view).
+        image_without_background_3: The third image without background.
     """
-    # Save the Trellis result if available
-    if trellis_result:
-        if trellis_result.ply_file:
-            save_file_bytes(trellis_result.ply_file, "ply", "mesh", suffix=".ply")
-
-    # Save the images using PIL Image.save()
+    # Save all images using PIL Image.save() with timestamp
     timestamp = datetime.utcnow().strftime("%Y-%m-%d_%H-%M-%S")
-    save_image(image_edited, "png", "image_edited", timestamp)
-    save_image(image_without_background, "png", "image_without_background", timestamp)
+    save_image(input_image, "png", "input_original", timestamp)
+    save_image(image_edited_1, "png", "image_edited_left_view", timestamp)
+    save_image(image_without_background_1, "png", "image_no_bg_left_view", timestamp)
+    save_image(image_edited_2, "png", "image_edited_right_view", timestamp)
+    save_image(image_without_background_2, "png", "image_no_bg_right_view", timestamp)
+    save_image(image_edited_3, "png", "image_edited_back_view", timestamp)
+    save_image(image_without_background_3, "png", "image_no_bg_back_view", timestamp)
 

@@ -1,10 +1,9 @@
 import torch
 import numpy as np
 from plyfile import PlyData, PlyElement
-from .general_utils import inverse_sigmoid, strip_symmetric, build_scaling_rotation
-import open3d as o3d
+from .general_utils import compute_inverse_sigmoid, extract_symmetric_elements, build_scaled_rotation_matrices
+import utils3d
 
-SH_C0_0 = 0.28209479177387814
 
 class Gaussian:
     def __init__(
@@ -34,7 +33,6 @@ class Gaussian:
         self.scaling_activation_type = scaling_activation
         self.device = device
         self.aabb = torch.tensor(aabb, dtype=torch.float32, device=device)
-        
         self.setup_functions()
 
         self._xyz = None
@@ -44,26 +42,11 @@ class Gaussian:
         self._rotation = None
         self._opacity = None
 
-    def convert_to_fp32(self):
-        self.aabb = self.aabb.float()
-        if self._xyz is not None:
-            self._xyz = self._xyz.float()
-        if self._features_dc is not None:
-            self._features_dc = self._features_dc.float()
-        if self._features_rest is not None:
-            self._features_rest = self._features_rest.float()
-        if self._scaling is not None:
-            self._scaling = self._scaling.float()
-        if self._rotation is not None:
-            self._rotation = self._rotation.float()
-        if self._opacity is not None:
-            self._opacity = self._opacity.float()
-
     def setup_functions(self):
         def build_covariance_from_scaling_rotation(scaling, scaling_modifier, rotation):
-            L = build_scaling_rotation(scaling_modifier * scaling, rotation)
+            L = build_scaled_rotation_matrices(scaling_modifier * scaling, rotation)
             actual_covariance = L @ L.transpose(1, 2)
-            symm = strip_symmetric(actual_covariance)
+            symm = extract_symmetric_elements(actual_covariance)
             return symm
         
         if self.scaling_activation_type == "exp":
@@ -76,7 +59,7 @@ class Gaussian:
         self.covariance_activation = build_covariance_from_scaling_rotation
 
         self.opacity_activation = torch.sigmoid
-        self.inverse_opacity_activation = inverse_sigmoid
+        self.inverse_opacity_activation = compute_inverse_sigmoid
 
         self.rotation_activation = torch.nn.functional.normalize
         
@@ -99,10 +82,6 @@ class Gaussian:
     @property
     def get_xyz(self):
         return self._xyz * self.aabb[None, 3:] + self.aabb[None, :3]
-    
-    @property
-    def get_color(self):
-        return (SH_C0_0 * self._features_dc.squeeze(dim=1) + 0.5).clip(0, 1)
     
     @property
     def get_features(self):
@@ -142,14 +121,21 @@ class Gaussian:
         for i in range(self._rotation.shape[1]):
             l.append('rot_{}'.format(i))
         return l
-
-    def save_ply(self, path):
+        
+    def save_ply(self, path, transform=[[1, 0, 0], [0, 0, -1], [0, 1, 0]]):
         xyz = self.get_xyz.detach().cpu().numpy()
         normals = np.zeros_like(xyz)
         f_dc = self._features_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
-        opacities = inverse_sigmoid(self.get_opacity).detach().cpu().numpy()
+        opacities = compute_inverse_sigmoid(self.get_opacity).detach().cpu().numpy()
         scale = torch.log(self.get_scaling).detach().cpu().numpy()
         rotation = (self._rotation + self.rots_bias[None, :]).detach().cpu().numpy()
+        
+        if transform is not None:
+            transform = np.array(transform)
+            xyz = np.matmul(xyz, transform.T)
+            rotation = utils3d.numpy.quaternion_to_matrix(rotation)
+            rotation = np.matmul(transform, rotation)
+            rotation = utils3d.numpy.matrix_to_quaternion(rotation)
 
         dtype_full = [(attribute, 'f4') for attribute in self.construct_list_of_attributes()]
 
@@ -159,7 +145,7 @@ class Gaussian:
         el = PlyElement.describe(elements, 'vertex')
         PlyData([el]).write(path)
 
-    def load_ply(self, path):
+    def load_ply(self, path, transform=[[1, 0, 0], [0, 0, -1], [0, 1, 0]]):
         plydata = PlyData.read(path)
 
         xyz = np.stack((np.asarray(plydata.elements[0]["x"]),
@@ -194,6 +180,13 @@ class Gaussian:
         for idx, attr_name in enumerate(rot_names):
             rots[:, idx] = np.asarray(plydata.elements[0][attr_name])
             
+        if transform is not None:
+            transform = np.array(transform)
+            xyz = np.matmul(xyz, transform)
+            rotation = utils3d.numpy.quaternion_to_matrix(rotation)
+            rotation = np.matmul(rotation, transform)
+            rotation = utils3d.numpy.matrix_to_quaternion(rotation)
+            
         # convert to actual gaussian attributes
         xyz = torch.tensor(xyz, dtype=torch.float, device=self.device)
         features_dc = torch.tensor(features_dc, dtype=torch.float, device=self.device).transpose(1, 2).contiguous()
@@ -214,123 +207,3 @@ class Gaussian:
         self._scaling = self.inverse_scaling_activation(torch.sqrt(torch.square(scales) - self.mininum_kernel_size ** 2)) - self.scale_bias
         self._rotation = rots - self.rots_bias[None, :]
         
-    @staticmethod
-    def _quat_multiply(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
-        """
-        Hamilton product q = q1 ⊗ q2.
-        q1, q2: (..., 4) with (w, x, y, z)
-        """
-        w1, x1, y1, z1 = q1.unbind(dim=-1)
-        w2, x2, y2, z2 = q2.unbind(dim=-1)
-        w = w1*w2 - x1*x2 - y1*y2 - z1*z2
-        x = w1*x2 + x1*w2 + y1*z2 - z1*y2
-        y = w1*y2 - x1*z2 + y1*w2 + z1*x2
-        z = w1*z2 + x1*y2 - y1*x2 + z1*w2
-        return torch.stack((w, x, y, z), dim=-1)
-
-    @staticmethod
-    def _matrix_to_quaternion(R: torch.Tensor) -> torch.Tensor:
-        """
-        Convert a single 3x3 rotation matrix to quaternion (w, x, y, z).
-        R: (3,3)
-        """
-        m00, m01, m02 = R[0,0], R[0,1], R[0,2]
-        m10, m11, m12 = R[1,0], R[1,1], R[1,2]
-        m20, m21, m22 = R[2,0], R[2,1], R[2,2]
-        tr = m00 + m11 + m22
-        if tr > 0:
-            S = torch.sqrt(tr + 1.0) * 2.0
-            w = 0.25 * S
-            x = (m21 - m12) / S
-            y = (m02 - m20) / S
-            z = (m10 - m01) / S
-        elif (m00 > m11) and (m00 > m22):
-            S = torch.sqrt(1.0 + m00 - m11 - m22) * 2.0
-            w = (m21 - m12) / S
-            x = 0.25 * S
-            y = (m01 + m10) / S
-            z = (m02 + m20) / S
-        elif m11 > m22:
-            S = torch.sqrt(1.0 + m11 - m00 - m22) * 2.0
-            w = (m02 - m20) / S
-            x = (m01 + m10) / S
-            y = 0.25 * S
-            z = (m12 + m21) / S
-        else:
-            S = torch.sqrt(1.0 + m22 - m00 - m11) * 2.0
-            w = (m10 - m01) / S
-            x = (m02 + m20) / S
-            y = (m12 + m21) / S
-            z = 0.25 * S
-        q = torch.stack([w, x, y, z], dim=0)
-        q = q / torch.linalg.norm(q)
-        return q
-
-    def transform_data(self, T, R):
-        """
-        Apply global rigid transformation x' = R x + T to the entire Gaussian.
-        - T: (3,) np.ndarray or torch.Tensor
-        - R: (3,3) np.ndarray or torch.Tensor (orthonormal rotation matrix)
-        Note: AABB remains unchanged; _xyz will be updated according to the old AABB.
-        """
-        if self._xyz is None:
-            raise ValueError("No xyz data in Gaussian (self._xyz is None).")
-        T = torch.as_tensor(T, dtype=torch.float32, device=self.device).view(1, 3)
-        R = torch.as_tensor(R, dtype=torch.float32, device=self.device).view(3, 3)
-
-        with torch.no_grad():
-            # 1) Transform position in world-space then write back to _xyz (according to aabb)
-            xyz_world = self.get_xyz  # (N,3) = _xyz * aabb[3:] + aabb[:3]
-            xyz_world_new = xyz_world @ R.T + T  # (N,3)
-            self.from_xyz(xyz_world_new)
-
-            # 2) Transform orientation if present (_rotation is quaternion + bias)
-            if self._rotation is not None:
-                q_world = self._matrix_to_quaternion(R).view(1, 4)              # (1,4)
-                q_world = q_world.expand(self._rotation.shape[0], -1).contiguous()  # (N,4)
-                q_gauss = self.get_rotation                                       # (N,4), normalized
-                q_new = self._quat_multiply(q_world, q_gauss)                     # (N,4)
-                q_new = q_new / torch.linalg.norm(q_new, dim=1, keepdim=True)
-                self.from_rotation(q_new)
-        return self
-
-    
-    def get_dims(self) -> list:
-        # real aabb
-        points = self.get_xyz.detach().cpu().numpy()
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(points.astype(np.float64))
-
-        bbox = o3d.geometry.AxisAlignedBoundingBox()
-        bbox = bbox.create_from_points(pcd.points)
-        extent = np.array(bbox.get_extent())
-        print("[W, H, D]: ", extent)
-        return [extent[0].item(), extent[1].item(), extent[2].item()]
-
-    def copy(self):
-        """Creates a deep copy of the Gaussian object with independent tensors."""
-        new_gaussian = Gaussian(**self.init_params)
-
-        device = self.device
-
-        if self._xyz is not None:
-            new_gaussian._xyz = self._xyz.clone().detach().to(device)
-        if self._features_dc is not None:
-            new_gaussian._features_dc = self._features_dc.clone().detach().to(device)
-        if self._features_rest is not None:
-            new_gaussian._features_rest = self._features_rest.clone().detach().to(device)
-        else:
-            new_gaussian._features_rest = None
-        if self._scaling is not None:
-            new_gaussian._scaling = self._scaling.clone().detach().to(device)
-        if self._rotation is not None:
-            new_gaussian._rotation = self._rotation.clone().detach().to(device)
-        if self._opacity is not None:
-            new_gaussian._opacity = self._opacity.clone().detach().to(device)
-
-        new_gaussian.aabb = self.aabb.clone().detach().to(device)
-        new_gaussian.scale_bias = self.scale_bias.clone().detach().to(device)
-        new_gaussian.rots_bias = self.rots_bias.clone().detach().to(device)
-        new_gaussian.opacity_bias = self.opacity_bias.clone().detach().to(device)
-
-        return new_gaussian

@@ -51,7 +51,7 @@ docker run --gpus all -v ./pipeline_service:/workspace/pipeline_service -p 10006
 
 ```bash
 curl -X POST "http://localhost:10006/generate" \
-  -F "prompt_image_file=@image.png" \
+  -F "prompt_image_file=@cr7.png" \
   -F "seed=42" \
   -o model.ply
 ```

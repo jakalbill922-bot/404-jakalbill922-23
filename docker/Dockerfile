@@ -60,11 +60,6 @@ COPY docker/requirements.txt /tmp/requirements.txt
 # Install basic dependencies from requirements.txt
 RUN pip install -r /tmp/requirements.txt
 
-# Install mip-splatting (requires PyTorch)
-RUN mkdir -p /tmp/extensions && \
-    git clone https://github.com/autonomousvision/mip-splatting.git /tmp/extensions/mip-splatting && \
-    pip install /tmp/extensions/mip-splatting/submodules/diff-gaussian-rasterization/ --no-build-isolation
-
 # Install flash-attn 2.8.2 prebuilt wheel for PyTorch 2.7 + Python 3.10 + CUDA 12.8
 RUN pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.7cxx11abiFALSE-cp311-cp311-linux_x86_64.whl
 
@@ -84,4 +79,5 @@ WORKDIR /workspace
 COPY pipeline_service /workspace
 
 EXPOSE 10006
-CMD ["python",  "serve.py"]
+# Use uvicorn with reload for development, python serve.py for production
+CMD ["uvicorn", "serve:app", "--host", "0.0.0.0", "--port", "10006", "--reload"]

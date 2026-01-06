@@ -1,7 +1,7 @@
 from .. import BACKEND
 
 
-SPCONV_ALGO = 'auto'   # 'auto', 'implicit_gemm', 'native'
+SPCONV_ALGO = 'auto'    # 'auto', 'implicit_gemm', 'native'
 
 def __from_env():
     import os

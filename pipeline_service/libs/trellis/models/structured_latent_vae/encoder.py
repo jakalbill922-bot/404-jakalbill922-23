@@ -21,7 +21,6 @@ class SLatEncoder(SparseTransformerBase):
         window_size: int = 8,
         pe_mode: Literal["ape", "rope"] = "ape",
         use_fp16: bool = False,
-        use_bf16: bool = False,
         use_checkpoint: bool = False,
         qk_rms_norm: bool = False,
     ):
@@ -36,7 +35,6 @@ class SLatEncoder(SparseTransformerBase):
             window_size=window_size,
             pe_mode=pe_mode,
             use_fp16=use_fp16,
-            use_bf16=use_bf16,
             use_checkpoint=use_checkpoint,
             qk_rms_norm=qk_rms_norm,
         )
@@ -46,8 +44,6 @@ class SLatEncoder(SparseTransformerBase):
         self.initialize_weights()
         if use_fp16:
             self.convert_to_fp16()
-        elif use_bf16:
-            self.convert_to_bf16()
 
     def initialize_weights(self) -> None:
         super().initialize_weights()

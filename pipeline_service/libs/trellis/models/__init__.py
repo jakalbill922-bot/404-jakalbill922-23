@@ -6,10 +6,7 @@ __attributes = {
     'SparseStructureFlowModel': 'sparse_structure_flow',
     'SLatEncoder': 'structured_latent_vae',
     'SLatGaussianDecoder': 'structured_latent_vae',
-    'SLatMeshDecoder': 'structured_latent_vae',
     'SLatFlowModel': 'structured_latent_flow',
-    'ModulatedMultiViewCond': 'sparse_structure_flow',
-    'ModulatedSLATMultiViewCond': 'structured_latent_flow',
 }
 
 __submodules = []
@@ -67,28 +64,10 @@ def from_pretrained(path: str, **kwargs):
 
     return model
 
-def save_finetuned_model(model, output_dir: str):
-    """
-    Save a fine-tuned model's state_dict as safetensors with a timestamp.
-
-    Args:
-        model: The model to be saved.
-        output_dir: The directory where the model's state_dict will be saved.
-                    The file will be saved as f'{output_dir}/{timestamp}.safetensors'.
-    """
-    from safetensors.torch import save_file
-    import os
-    from datetime import datetime
-
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    save_file(model.state_dict(), f"{output_dir}/{timestamp}.safetensors")
 
 # For Pylance
 if __name__ == '__main__':
     from .sparse_structure_vae import SparseStructureEncoder, SparseStructureDecoder
-    from .sparse_structure_flow import SparseStructureFlowModel, ModulatedMultiViewCond
-    from .structured_latent_vae import SLatEncoder, SLatGaussianDecoder, SLatMeshDecoder
-    from .structured_latent_flow import SLatFlowModel, ModulatedSLATMultiViewCond
+    from .sparse_structure_flow import SparseStructureFlowModel
+    from .structured_latent_vae import SLatEncoder, SLatGaussianDecoder
+    from .structured_latent_flow import SLatFlowModel
